@@ -1,4 +1,4 @@
-"""OpenAI integration for threat detection and detailed explanations."""
+"""Google Gemini integration for threat detection and detailed explanations."""
 
 import json
 import os
@@ -6,7 +6,7 @@ from typing import Optional
 
 from utils.logger import setup_logger
 
-logger = setup_logger("openai_analyzer")
+logger = setup_logger("gemini_analyzer")
 
 SYSTEM_PROMPT = """You are a phishing detection expert specializing in multilingual financial fraud and social engineering attacks. When given a suspicious phrase, explain SPECIFICALLY why it's dangerous by contrasting it with how REAL institutions actually operate.
 
@@ -67,41 +67,41 @@ IMPORTANT RULES:
 - Always respond with valid JSON only"""
 
 
-class OpenAIAnalyzer:
-    """Uses OpenAI API to provide detailed phishing explanations."""
+class GeminiAnalyzer:
+    """Uses Google Gemini API to provide detailed phishing explanations."""
 
     def __init__(self):
-        self.api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
-        self.enabled: bool = os.getenv("ENABLE_OPENAI", "true").lower() == "true"
-        self.timeout: int = int(os.getenv("OPENAI_TIMEOUT", "3"))
-        self.model: str = "gpt-4-mini"
+        self.api_key: Optional[str] = os.getenv("GEMINI_API_KEY")
+        self.enabled: bool = os.getenv("ENABLE_GEMINI", "true").lower() == "true"
+        self.model: str = "gemini-1.5-flash"
         self.client: Optional[object] = None
 
         if self.api_key and self.enabled:
             try:
-                from openai import OpenAI
+                import google.generativeai as genai
 
-                self.client = OpenAI(api_key=self.api_key, timeout=self.timeout)
-                logger.info("OpenAI analyzer initialized")
+                genai.configure(api_key=self.api_key)
+                self.client = genai
+                logger.info("Gemini analyzer initialized with model %s", self.model)
             except ImportError:
-                logger.warning("OpenAI package not installed")
+                logger.warning("google-generativeai package not installed")
         else:
             logger.warning(
-                "OpenAI analyzer disabled — %s",
+                "Gemini analyzer disabled — %s",
                 "no API key" if not self.api_key else "disabled by config",
             )
 
     def is_available(self) -> bool:
-        """Check whether the OpenAI analyzer can be used."""
+        """Check whether the Gemini analyzer can be used."""
         return self.client is not None and self.enabled
 
     async def detect_threats(self, text: str) -> Optional[dict]:
-        """Detect and score all phishing threats in text using OpenAI.
+        """Detect and score all phishing threats in text using Gemini.
 
         Returns dict with 'risk_score', 'is_phishing', 'threats', 'tactics' or None on failure.
         """
         if not self.is_available():
-            logger.debug("OpenAI not available, skipping threat detection")
+            logger.debug("Gemini not available, skipping threat detection")
             return None
 
         if not text or len(text.strip()) < 5:
@@ -114,17 +114,19 @@ class OpenAIAnalyzer:
             }
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": THREAT_DETECTION_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Analyze this text for phishing/scam indicators:\n\n{text}"},
-                ],
-                max_tokens=1200,
-                temperature=0.1,
+            model = self.client.GenerativeModel(self.model)
+
+            user_prompt = f"{THREAT_DETECTION_SYSTEM_PROMPT}\n\nAnalyze this text for phishing/scam indicators:\n\n{text}"
+
+            response = model.generate_content(
+                user_prompt,
+                generation_config=self.client.types.GenerationConfig(
+                    max_output_tokens=1200,
+                    temperature=0.1,
+                ),
             )
 
-            raw = response.choices[0].message.content.strip()
+            raw = response.text.strip()
 
             # Strip markdown if present
             if raw.startswith("```"):
@@ -133,17 +135,17 @@ class OpenAIAnalyzer:
 
             result = json.loads(raw)
             logger.info(
-                "OpenAI threat detection complete — risk=%d, phishing=%s",
+                "Gemini threat detection complete — risk=%d, phishing=%s",
                 result.get("risk_score", 0),
                 result.get("is_phishing", False),
             )
             return self._validate_threat_result(result)
 
         except json.JSONDecodeError as exc:
-            logger.error("Failed to parse OpenAI threat response as JSON: %s", exc)
+            logger.error("Failed to parse Gemini threat response as JSON: %s", exc)
             return None
         except Exception as exc:
-            logger.error("OpenAI threat detection failed: %s", exc)
+            logger.error("Gemini threat detection failed: %s", exc)
             return None
 
     def analyze_threat(
@@ -154,12 +156,14 @@ class OpenAIAnalyzer:
         Returns dict with 'reason', 'severity', 'what_real_institutions_do', and 'recommendation' or None on failure.
         """
         if not self.is_available():
-            logger.debug("OpenAI not available, skipping analysis")
+            logger.debug("Gemini not available, skipping analysis")
             return None
 
         try:
             category_context = self._get_category_context(category)
-            user_prompt = f"""Analyze this suspicious message phrase and explain why it's dangerous by contrasting with how REAL institutions work:
+            user_prompt = f"""{SYSTEM_PROMPT}
+
+Analyze this suspicious message phrase and explain why it's dangerous by contrasting with how REAL institutions work:
 
 Phrase: "{phrase}"
 Detected Category: {category}
@@ -170,17 +174,16 @@ Provide:
 2. How legitimate institutions handle this differently
 3. Specific action the user should take"""
 
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_tokens=280,
-                temperature=0.2,
+            model = self.client.GenerativeModel(self.model)
+            response = model.generate_content(
+                user_prompt,
+                generation_config=self.client.types.GenerationConfig(
+                    max_output_tokens=280,
+                    temperature=0.2,
+                ),
             )
 
-            raw = response.choices[0].message.content.strip()
+            raw = response.text.strip()
 
             # Strip markdown if present
             if raw.startswith("```"):
@@ -188,14 +191,14 @@ Provide:
                 raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
 
             result = json.loads(raw)
-            logger.info("OpenAI analysis complete — severity=%s", result.get("severity"))
+            logger.info("Gemini analysis complete — severity=%s", result.get("severity"))
             return self._validate(result)
 
         except json.JSONDecodeError as exc:
-            logger.error("Failed to parse OpenAI response as JSON: %s", exc)
+            logger.error("Failed to parse Gemini response as JSON: %s", exc)
             return None
         except Exception as exc:
-            logger.error("OpenAI analysis failed: %s", exc)
+            logger.error("Gemini analysis failed: %s", exc)
             return None
 
     def _get_category_context(self, category: str) -> str:
@@ -220,12 +223,12 @@ Provide:
         """Ensure the threat detection response has required fields."""
         required = {"risk_score", "is_phishing", "threats"}
         if not required.issubset(result.keys()):
-            logger.warning("OpenAI threat response missing fields: %s", required - result.keys())
+            logger.warning("Gemini threat response missing fields: %s", required - result.keys())
             return None
 
         risk_score = result.get("risk_score", 0)
         if not isinstance(risk_score, (int, float)) or risk_score < 0 or risk_score > 100:
-            logger.warning("Invalid risk_score from OpenAI: %s", risk_score)
+            logger.warning("Invalid risk_score from Gemini: %s", risk_score)
             result["risk_score"] = max(0, min(100, int(risk_score) if isinstance(risk_score, (int, float)) else 0))
 
         if not isinstance(result.get("is_phishing"), bool):
@@ -237,15 +240,15 @@ Provide:
         return result
 
     def _validate(self, result: dict) -> Optional[dict]:
-        """Ensure the OpenAI response has the expected fields."""
+        """Ensure the Gemini response has the expected fields."""
         required = {"reason", "severity", "recommendation"}
         if not required.issubset(result.keys()):
-            logger.warning("OpenAI response missing fields: %s", required - result.keys())
+            logger.warning("Gemini response missing fields: %s", required - result.keys())
             return None
 
         severity = result["severity"]
         if severity not in ("high", "medium", "low"):
-            logger.warning("Invalid severity from OpenAI: %s", severity)
+            logger.warning("Invalid severity from Gemini: %s", severity)
             return None
 
         return result

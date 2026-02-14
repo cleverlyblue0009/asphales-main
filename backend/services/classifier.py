@@ -7,7 +7,7 @@ from models.risk_scorer import RiskResult, RiskScorer, ThreatDetail
 from services.cache_manager import CacheManager
 from services.genai_analyzer import GenAIAnalyzer
 from services.ml_classifier import MLPhishingClassifier
-from services.openai_analyzer import OpenAIAnalyzer
+from services.openai_analyzer import GeminiAnalyzer
 from utils.logger import setup_logger
 from utils.text_processor import text_hash, validate_length, detect_language, get_detected_scripts
 
@@ -20,7 +20,7 @@ class HybridClassifier:
     def __init__(self):
         self.risk_scorer = RiskScorer()
         self.genai = GenAIAnalyzer()
-        self.openai = OpenAIAnalyzer()
+        self.gemini = GeminiAnalyzer()
         self.ml = MLPhishingClassifier()
         self.cache = CacheManager(max_size=1000, ttl=60)
 
@@ -28,8 +28,8 @@ class HybridClassifier:
         self.total_time_ms = 0.0
 
         logger.info(
-            "Classifier ready — OpenAI (primary) %s, GenAI (secondary) %s, ML fallback %s",
-            "enabled" if self.openai.is_available() else "disabled",
+            "Classifier ready — Gemini (primary) %s, GenAI (secondary) %s, ML fallback %s",
+            "enabled" if self.gemini.is_available() else "disabled",
             "enabled" if self.genai.is_available() else "disabled",
             "available",
         )
@@ -57,29 +57,29 @@ class HybridClassifier:
             self.total_time_ms += elapsed
             return cached
 
-        # Primary: Use OpenAI for threat detection
-        openai_result = await self.openai.detect_threats(text)
+        # Primary: Use Gemini for threat detection
+        gemini_result = await self.gemini.detect_threats(text)
 
         final_score = 0
         threats: list[ThreatDetail] = []
-        method = "openai"
+        method = "gemini"
 
-        if openai_result:
-            final_score = openai_result.get("risk_score", 0)
+        if gemini_result:
+            final_score = gemini_result.get("risk_score", 0)
 
-            # Convert OpenAI threats to ThreatDetail objects
-            for threat in openai_result.get("threats", []):
+            # Convert Gemini threats to ThreatDetail objects
+            for threat in gemini_result.get("threats", []):
                 threats.append(
                     ThreatDetail(
                         phrase=threat.get("phrase", text[:100]),
                         risk=threat.get("risk", final_score),
-                        category=threat.get("category", "openai_detected"),
-                        explanation=threat.get("explanation", "OpenAI ne phishing pattern detect kiya."),
+                        category=threat.get("category", "gemini_detected"),
+                        explanation=threat.get("explanation", "Gemini ne phishing pattern detect kiya."),
                     )
                 )
         else:
-            # Fallback to ML if OpenAI fails
-            logger.warning("OpenAI threat detection failed, falling back to ML")
+            # Fallback to ML if Gemini fails
+            logger.warning("Gemini threat detection failed, falling back to ML")
             ml_doc_result = self.ml.predict(text)
             ml_doc_score = ml_doc_result["risk_score"]
 
@@ -99,7 +99,7 @@ class HybridClassifier:
                 # If GenAI has higher confidence, adjust final score
                 if genai_result.get("is_phishing"):
                     final_score = max(final_score, genai_score)
-                    method = "openai+genai"
+                    method = "gemini+genai"
 
         severity = self.risk_scorer.get_severity(final_score)
 

@@ -9,7 +9,7 @@ from services.genai_analyzer import GenAIAnalyzer
 from services.ml_classifier import MLPhishingClassifier
 from services.openai_analyzer import OpenAIAnalyzer
 from utils.logger import setup_logger
-from utils.text_processor import text_hash, validate_length
+from utils.text_processor import text_hash, validate_length, detect_language, get_detected_scripts
 
 logger = setup_logger("classifier")
 
@@ -131,13 +131,25 @@ class HybridClassifier:
             if line_risk > max_line:
                 max_line = line_risk
                 critical_line = line[:300]
-            if line_risk >= 52:
+
+            # Detect language for better vernacular handling
+            lang = detect_language(line)
+            is_vernacular = lang != "english" and lang != "multilingual"
+
+            # Lower threshold for pure vernacular text to catch more phishing
+            # since vernacular messages may have different patterns
+            threshold = 45 if is_vernacular else 52
+
+            if line_risk >= threshold:
+                scripts = get_detected_scripts(line)
+                script_info = f" [{', '.join(scripts)}]" if scripts else ""
+
                 threats.append(
                     ThreatDetail(
                         phrase=line[:220],
                         risk=line_risk,
                         category="ml_line_detected",
-                        explanation="Is specific line mein phishing-like pattern hai (OTP/KYC/account urgency/credential bait).",
+                        explanation=f"Is line mein phishing-like pattern detected{script_info} (OTP/KYC/urgency/credential bait).",
                     )
                 )
 

@@ -254,10 +254,14 @@ async function scanPage() {
       result.threats.forEach(threat => {
         let highlighted = false;
 
+        // Normalize the phrase for better matching
+        const phraseNorm = threat.phrase.normalize('NFC').trim();
+        const phraseLower = phraseNorm.toLowerCase();
+
         // Try to match in individual blocks first
         for (const block of limitedBlocks) {
-          const blockNorm = block.text.normalize('NFC');
-          const phraseNorm = threat.phrase.normalize('NFC');
+          const blockNorm = block.text.normalize('NFC').trim();
+          const blockLower = blockNorm.toLowerCase();
 
           // Try exact match
           if (blockNorm.includes(phraseNorm)) {
@@ -273,7 +277,7 @@ async function scanPage() {
           }
 
           // Try case-insensitive match for English
-          if (blockNorm.toLowerCase().includes(phraseNorm.toLowerCase())) {
+          if (blockLower.includes(phraseLower)) {
             highlightText(
               block.node,
               threat.phrase,
@@ -284,10 +288,49 @@ async function scanPage() {
             highlighted = true;
             break;
           }
+
+          // Try partial match (at least 60% of the phrase)
+          const phraseWords = phraseNorm.split(/\s+/).filter(w => w.length > 2);
+          if (phraseWords.length > 0) {
+            const matchedWords = phraseWords.filter(word => blockNorm.includes(word) || blockLower.includes(word.toLowerCase()));
+            const matchRatio = matchedWords.length / phraseWords.length;
+
+            if (matchRatio >= 0.6) {
+              // Found a partial match, highlight the entire block text
+              highlightText(
+                block.node,
+                block.text.trim(),
+                threat.risk,
+                threat.explanation || "Suspicious content detected.",
+                threat.severity_color || "orange"
+              );
+              highlighted = true;
+              console.log(`✅ Partial match (${Math.round(matchRatio * 100)}%) for threat in block`);
+              break;
+            }
+          }
+
+          // Try finding substring matches (for long phrases)
+          if (phraseNorm.length > 50) {
+            const phraseSubstring = phraseNorm.substring(0, 50);
+            if (blockNorm.includes(phraseSubstring) || blockLower.includes(phraseSubstring.toLowerCase())) {
+              highlightText(
+                block.node,
+                block.text.trim(),
+                threat.risk,
+                threat.explanation || "Suspicious content detected.",
+                threat.severity_color || "orange"
+              );
+              highlighted = true;
+              console.log(`✅ Substring match for threat in block`);
+              break;
+            }
+          }
         }
 
         if (!highlighted) {
-          console.warn(`Could not find and highlight threat in page: "${threat.phrase.substring(0, 50)}..."`);
+          console.warn(`⚠️ Could not find and highlight threat in page: "${threat.phrase.substring(0, 50)}..."`);
+          console.warn(`   Searched in ${limitedBlocks.length} blocks for phrase of length ${threat.phrase.length}`);
         }
       });
     } else {

@@ -284,12 +284,135 @@ CRITICAL: If text is in pure vernacular (Hindi/Tamil/etc), extract FULL paragrap
 
         return prompt
 
+    async def translate_to_english(self, text: str) -> Optional[str]:
+        """Translate vernacular text to English using Groq."""
+        if not self.api_key or not self.enabled:
+            return None
+
+        # Detect if text contains vernacular scripts
+        has_vernacular = False
+        for char in text:
+            code = ord(char)
+            for lang, (start, end) in self.SCRIPT_RANGES.items():
+                if start <= code <= end:
+                    has_vernacular = True
+                    break
+            if has_vernacular:
+                break
+
+        # If no vernacular detected, return original text
+        if not has_vernacular:
+            logger.info("No vernacular script detected, skipping translation")
+            return text
+
+        try:
+            logger.info("Translating vernacular text to English...")
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    self.api_url,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "You are a translation expert. Translate the given text from any Indian language (Hindi, Tamil, Telugu, Bengali, Marathi, Gujarati, etc.) to English. Preserve the exact meaning and structure. Only respond with the English translation, nothing else."
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Translate this text to English:\n\n{text}"
+                            }
+                        ],
+                        "temperature": 0.1,
+                        "max_tokens": 3000,
+                    },
+                )
+
+                if response.status_code != 200:
+                    logger.error("Translation API error: %d", response.status_code)
+                    return None
+
+                data = response.json()
+                translated = data["choices"][0]["message"]["content"].strip()
+
+                logger.info("Translation successful: %d chars -> %d chars", len(text), len(translated))
+                return translated
+
+        except Exception as exc:
+            logger.error("Translation failed: %s", exc)
+            return None
+
+    def _find_original_phrase(self, original_text: str, translated_phrase: str, translated_full_text: str) -> str:
+        """Find the original vernacular phrase that corresponds to the translated phrase."""
+        # Simple heuristic: find the position of the phrase in translated text,
+        # then try to extract the corresponding segment from original text
+
+        # Normalize for comparison
+        translated_phrase_norm = translated_phrase.strip().lower()
+        translated_full_norm = translated_full_text.strip().lower()
+
+        # Find position in translated text
+        pos = translated_full_norm.find(translated_phrase_norm)
+        if pos == -1:
+            # If not found, try fuzzy matching or return a segment from original
+            # For now, return the first ~100 chars of original as fallback
+            return original_text[:min(200, len(original_text))].strip()
+
+        # Calculate approximate position ratio
+        ratio_start = pos / len(translated_full_text) if len(translated_full_text) > 0 else 0
+        ratio_end = (pos + len(translated_phrase)) / len(translated_full_text) if len(translated_full_text) > 0 else 0
+
+        # Apply ratio to original text
+        original_start = int(ratio_start * len(original_text))
+        original_end = int(ratio_end * len(original_text))
+
+        # Expand to word/sentence boundaries
+        # Find sentence delimiters
+        delimiters = ['।', '.', '!', '?', '\n']
+
+        # Expand start to previous delimiter or start of text
+        while original_start > 0 and original_text[original_start] not in delimiters:
+            original_start -= 1
+        if original_start > 0 and original_text[original_start] in delimiters:
+            original_start += 1
+
+        # Expand end to next delimiter or end of text
+        while original_end < len(original_text) and original_text[original_end] not in delimiters:
+            original_end += 1
+
+        # Ensure we have at least 30 chars
+        if original_end - original_start < 30:
+            original_start = max(0, original_start - 50)
+            original_end = min(len(original_text), original_end + 50)
+
+        phrase = original_text[original_start:original_end].strip()
+
+        # If still too short, return a larger segment
+        if len(phrase) < 30:
+            phrase = original_text[:min(200, len(original_text))].strip()
+
+        return phrase
+
     async def analyze_with_groq(self, text: str) -> Optional[dict]:
-        """Use Groq API with few-shot learning."""
+        """Use Groq API with few-shot learning. First translates vernacular to English, then analyzes."""
         if not self.api_key or not self.enabled:
             return None
 
         try:
+            # Store original text
+            original_text = text
+
+            # Step 1: Translate vernacular text to English
+            translated_text = await self.translate_to_english(text)
+            if translated_text is None:
+                logger.warning("Translation failed, using original text")
+                translated_text = text
+
+            # Step 2: Analyze the translated (or original) text
             system_prompt = self._build_groq_prompt()
 
             async with httpx.AsyncClient(timeout=45.0) as client:
@@ -303,7 +426,7 @@ CRITICAL: If text is in pure vernacular (Hindi/Tamil/etc), extract FULL paragrap
                         "model": self.model,
                         "messages": [
                             {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": f"Analyze this message for phishing:\n\n{text}"}
+                            {"role": "user", "content": f"Analyze this message for phishing:\n\n{translated_text}"}
                         ],
                         "temperature": 0.1,
                         "max_tokens": 2500,
@@ -324,6 +447,20 @@ CRITICAL: If text is in pure vernacular (Hindi/Tamil/etc), extract FULL paragrap
                     result["threats"] = []
                 if not isinstance(result.get("risk_score"), (int, float)):
                     result["risk_score"] = 0
+
+                # Step 3: Map threats back to original vernacular text
+                if translated_text != original_text:
+                    logger.info("Mapping %d threats back to original vernacular text", len(result.get("threats", [])))
+                    for threat in result.get("threats", []):
+                        if "phrase" in threat:
+                            # Find corresponding phrase in original text
+                            original_phrase = self._find_original_phrase(
+                                original_text,
+                                threat["phrase"],
+                                translated_text
+                            )
+                            threat["phrase"] = original_phrase
+                            logger.debug("Mapped phrase: '%s' -> '%s'", threat["phrase"][:50], original_phrase[:50])
 
                 logger.info("Groq analysis: %d threats, risk=%d",
                            len(result.get("threats", [])),

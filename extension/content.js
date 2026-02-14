@@ -116,66 +116,67 @@ function useFallbackDetection(text) {
 }
 
 // ============ HIGHLIGHT DANGEROUS TEXT ============
-function highlightText(textNode, phrase, risk, explanation) {
+function highlightText(textNode, phrase, risk, explanation, severityColor) {
   const text = textNode.textContent;
   const lowerText = text.toLowerCase();
   const lowerPhrase = phrase.toLowerCase();
   const index = lowerText.indexOf(lowerPhrase);
-  
+
   if (index === -1) return;
-  
-  console.log(`🎯 Highlighting: "${phrase}" with risk ${risk}%`);
-  
+
+  console.log(`🎯 Highlighting: "${phrase}" with risk ${risk}% and color ${severityColor}`);
+
   try {
     const range = document.createRange();
     range.setStart(textNode, index);
     range.setEnd(textNode, index + phrase.length);
-    
+
     const span = document.createElement('span');
-    span.className = 'surakshaai-highlight';
+    span.className = `surakshaai-highlight surakshaai-${severityColor}`;
     span.dataset.risk = risk;
     span.dataset.explanation = explanation;
     span.dataset.phrase = phrase;
-    
+    span.dataset.severityColor = severityColor;
+
     // Add click handler
     span.addEventListener('click', (e) => {
       e.stopPropagation();
-      showTooltip(e.clientX, e.clientY, risk, explanation);
+      showTooltip(e.clientX, e.clientY, risk, explanation, severityColor);
     });
-    
+
     range.surroundContents(span);
     highlights.push(span);
-    
+
   } catch (e) {
     console.warn('Could not highlight phrase:', phrase, e);
   }
 }
 
 // ============ SHOW TOOLTIP ============
-function showTooltip(x, y, risk, explanation) {
+function showTooltip(x, y, risk, explanation, severityColor) {
   // Remove any existing tooltip
   document.querySelectorAll('.surakshaai-tooltip').forEach(t => t.remove());
-  
+
   const tooltip = document.createElement('div');
   tooltip.className = 'surakshaai-tooltip';
-  
-  const riskLevel = risk > 70 ? 'high' : risk > 40 ? 'medium' : 'low';
-  const riskText = risk > 70 ? 'High Risk' : risk > 40 ? 'Medium Risk' : 'Low Risk';
-  
+
+  const riskLevel = risk > 75 ? 'high' : risk > 50 ? 'medium' : 'low';
+  const riskText = risk > 75 ? '🔴 High Risk' : risk > 50 ? '🟡 Medium Risk' : '🟠 Low Risk';
+
   tooltip.innerHTML = `
-    <div class="risk-badge risk-${riskLevel}">${riskText}: ${risk}%</div>
+    <div class="risk-badge risk-${riskLevel}" style="background: ${severityColor === 'red' ? '#f44336' : severityColor === 'yellow' ? '#ff9800' : '#ff6f00'}">${riskText}: ${risk}%</div>
     <div>${explanation}</div>
   `;
-  
+
   document.body.appendChild(tooltip);
-  
+
   // Position tooltip
   tooltip.style.left = `${Math.min(x, window.innerWidth - 370)}px`;
   tooltip.style.top = `${y + 10}px`;
-  
+
   // Auto-remove after 6 seconds
   setTimeout(() => tooltip.remove(), 6000);
-  
+
   // Remove on click anywhere
   document.addEventListener('click', () => tooltip.remove(), { once: true });
 }
@@ -243,7 +244,8 @@ async function scanPage() {
               block.node,
               threat.phrase,
               threat.risk,
-              threat.explanation || "Suspicious content detected."
+              threat.explanation || "Suspicious content detected.",
+              threat.severity_color || "orange"
             );
           }
         });

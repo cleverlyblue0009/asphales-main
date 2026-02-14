@@ -1,6 +1,6 @@
 """Risk scoring and severity classification for phishing detection results."""
 
-from typing import Any, Optional
+from typing import Any, Optional  # noqa: F401
 
 SEVERITY_LEVELS = {
     "low": (0, 30),
@@ -30,11 +30,22 @@ class ThreatDetail:
         risk: int,
         category: str,
         explanation: str,
+        severity_color: Optional[str] = None,
     ):
         self.phrase = phrase
         self.risk = risk
         self.category = category
         self.explanation = explanation
+        self.severity_color = severity_color or self._get_severity_color(risk)
+
+    def _get_severity_color(self, risk: int) -> str:
+        """Map risk score to color."""
+        if risk >= 75:
+            return "red"
+        elif risk >= 50:
+            return "yellow"
+        else:
+            return "orange"
 
     def to_dict(self) -> dict:
         return {
@@ -42,6 +53,7 @@ class ThreatDetail:
             "risk": self.risk,
             "category": self.category,
             "explanation": self.explanation,
+            "severity_color": self.severity_color,
         }
 
 
@@ -58,6 +70,7 @@ class RiskResult:
         genai_score: Optional[int] = None,
         processing_time_ms: float = 0,
         cached: bool = False,
+        critical_line: Optional[str] = None,
     ):
         self.overall_risk = overall_risk
         self.severity = severity
@@ -67,6 +80,7 @@ class RiskResult:
         self.genai_score = genai_score
         self.processing_time_ms = processing_time_ms
         self.cached = cached
+        self.critical_line = critical_line
 
     def to_dict(self) -> dict:
         result: dict[str, Any] = {
@@ -80,6 +94,8 @@ class RiskResult:
         }
         if self.genai_score is not None:
             result["genai_score"] = self.genai_score
+        if self.critical_line is not None:
+            result["critical_line"] = self.critical_line
         return result
 
 

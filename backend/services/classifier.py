@@ -7,7 +7,7 @@ from models.risk_scorer import RiskResult, RiskScorer, ThreatDetail
 from services.cache_manager import CacheManager
 from services.genai_analyzer import GenAIAnalyzer
 from services.ml_classifier import MLPhishingClassifier
-from services.openai_analyzer import OpenAIAnalyzer
+from services.openai_analyzer import GeminiAnalyzer
 from utils.logger import setup_logger
 from utils.text_processor import text_hash, validate_length, detect_language, get_detected_scripts
 
@@ -20,7 +20,7 @@ class HybridClassifier:
     def __init__(self):
         self.risk_scorer = RiskScorer()
         self.genai = GenAIAnalyzer()
-        self.openai = OpenAIAnalyzer()
+        self.gemini = GeminiAnalyzer()
         self.ml = MLPhishingClassifier()
         self.cache = CacheManager(max_size=1000, ttl=60)
 
@@ -28,10 +28,10 @@ class HybridClassifier:
         self.total_time_ms = 0.0
 
         logger.info(
-            "Classifier ready — ML model=%s, GenAI %s, OpenAI %s",
-            self.ml.model_name,
+            "Classifier ready — Gemini (primary) %s, GenAI (secondary) %s, ML fallback %s",
+            "enabled" if self.gemini.is_available() else "disabled",
             "enabled" if self.genai.is_available() else "disabled",
-            "enabled" if self.openai.is_available() else "disabled",
+            "available",
         )
 
     async def classify(self, text: str) -> RiskResult:
@@ -57,63 +57,61 @@ class HybridClassifier:
             self.total_time_ms += elapsed
             return cached
 
-        ml_doc_result = self.ml.predict(text)
-        ml_doc_score = ml_doc_result["risk_score"]
+        # Primary: Use Gemini for threat detection
+        gemini_result = await self.gemini.detect_threats(text)
 
-        line_threats, max_line_score, critical_line = self._score_suspicious_lines(text)
-        ml_score = max(ml_doc_score, max_line_score)
+        final_score = 0
+        threats: list[ThreatDetail] = []
+        method = "gemini"
 
+        if gemini_result:
+            final_score = gemini_result.get("risk_score", 0)
+
+            # Convert Gemini threats to ThreatDetail objects
+            for threat in gemini_result.get("threats", []):
+                threats.append(
+                    ThreatDetail(
+                        phrase=threat.get("phrase", text[:100]),
+                        risk=threat.get("risk", final_score),
+                        category=threat.get("category", "gemini_detected"),
+                        explanation=threat.get("explanation", "Gemini ne phishing pattern detect kiya."),
+                    )
+                )
+        else:
+            # Fallback to ML if Gemini fails
+            logger.warning("Gemini threat detection failed, falling back to ML")
+            ml_doc_result = self.ml.predict(text)
+            ml_doc_score = ml_doc_result["risk_score"]
+
+            line_threats, max_line_score, critical_line = self._score_suspicious_lines(text)
+            final_score = max(ml_doc_score, max_line_score)
+            threats = line_threats
+            method = "ml_fallback"
+
+        severity = self.risk_scorer.get_severity(final_score)
+
+        # Optional: Get GenAI second opinion if available and score is borderline
         genai_score: Optional[int] = None
-        genai_explanation: Optional[str] = None
-
-        # Final GenAI check (when available) to reduce false negatives.
-        if self.genai.is_available():
+        if self.genai.is_available() and 30 <= final_score <= 70:
             genai_result = await self.genai.analyze(text)
             if genai_result is not None:
                 genai_score = int(genai_result["risk_score"])
-                genai_explanation = genai_result.get("explanation_hinglish")
+                # If GenAI has higher confidence, adjust final score
                 if genai_result.get("is_phishing"):
-                    tactic_text = ", ".join(genai_result.get("tactics", [])[:4]) or "contextual phishing indicators"
-                    line_threats.append(
-                        ThreatDetail(
-                            phrase=tactic_text,
-                            risk=genai_score,
-                            category="genai_detected",
-                            explanation=genai_explanation or "GenAI ne suspicious social-engineering pattern detect kiya.",
-                        )
-                    )
+                    final_score = max(final_score, genai_score)
+                    method = "gemini+genai"
 
-        final_score = ml_score if genai_score is None else max(ml_score, int((ml_score * 0.65) + (genai_score * 0.35)))
         severity = self.risk_scorer.get_severity(final_score)
-
-        if not line_threats and final_score >= 45:
-            line_threats.append(
-                ThreatDetail(
-                    phrase=text[:220],
-                    risk=final_score,
-                    category="ml_detected",
-                    explanation="ML + contextual analysis ne message ko suspicious classify kiya. Link/OTP/KYC details verify kiye bina action mat lo.",
-                )
-            )
-
-        # Get OpenAI explanations for top threats
-        if self.openai.is_available() and line_threats:
-            top_threat = line_threats[0]
-            openai_result = self.openai.analyze_threat(
-                top_threat.phrase, top_threat.category
-            )
-            if openai_result:
-                top_threat.explanation = openai_result.get("reason", top_threat.explanation)
 
         result = RiskResult(
             overall_risk=final_score,
             severity=severity,
-            threats=line_threats[:8],
-            method="ml+genai" if genai_score is not None else "ml",
-            ml_score=ml_score,
+            threats=threats[:8],
+            method=method,
+            ml_score=None,
             genai_score=genai_score,
             processing_time_ms=(time.time() - start) * 1000,
-            critical_line=critical_line,
+            critical_line=None,
         )
 
         self.total_time_ms += result.processing_time_ms

@@ -66,7 +66,7 @@ class RiskResult:
         severity: str,
         threats: list[ThreatDetail],
         method: str = "pattern",
-        ml_score: int = 0,
+        ml_score: Optional[int] = None,
         genai_score: Optional[int] = None,
         processing_time_ms: float = 0,
         cached: bool = False,

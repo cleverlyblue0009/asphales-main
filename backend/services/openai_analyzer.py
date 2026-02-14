@@ -1,4 +1,4 @@
-"""OpenAI integration for detailed phishing threat explanations."""
+"""OpenAI integration for threat detection and detailed explanations."""
 
 import json
 import os
@@ -29,6 +29,43 @@ Be specific about which institution would NEVER do this. Respond ONLY with valid
   "recommendation": "Specific action user should take"
 }"""
 
+THREAT_DETECTION_SYSTEM_PROMPT = """You are an expert in detecting phishing, scams, and social engineering attacks in text messages, emails, and online communications. Your task is to analyze text and identify ALL phishing/scam indicators.
+
+PHISHING INDICATORS YOU MUST DETECT:
+1. OTP/PASSWORD REQUESTS: Messages asking for OTP, CVV, PIN, passwords, 2FA codes
+2. KYC/VERIFICATION: Requests for personal documents, identity verification, account updates
+3. URGENCY/THREATS: Time-sensitive demands, account closure threats, immediate action required
+4. CREDENTIAL HARVESTING: Fake login links, "verify account", "confirm identity"
+5. PAYMENT SCAMS: Unexpected refunds, payment failures, pending payments, money requests
+6. LOTTERY/PRIZE SCAMS: You won something you didn't enter, claim free rewards
+7. JOB SCAMS: Unsolicited job offers, advance payment for jobs, fake recruitment
+8. IMPERSONATION: Pretending to be banks, govt agencies, payment apps, employers
+9. SUSPICIOUS LINKS: Shortened URLs, phishing domains, malicious links
+10. SOCIAL ENGINEERING: Creating panic, fear, false authority, fake urgency
+
+For EACH suspicious phrase or threat indicator found, respond with this JSON:
+{
+  "risk_score": 0-100,
+  "is_phishing": true/false,
+  "threats": [
+    {
+      "phrase": "exact suspicious text from message",
+      "risk": 0-100,
+      "category": "otp|kyc|credential|urgent|payment|lottery|job|impersonation|link|social_engineering",
+      "explanation": "Why this is dangerous - be specific to what was detected"
+    }
+  ],
+  "overall_assessment": "Brief summary of the threat level",
+  "tactics": ["list", "of", "detected", "scam", "tactics"]
+}
+
+IMPORTANT RULES:
+- Be thorough and find ALL suspicious indicators
+- Give specific, actionable explanations
+- Risk scores: 0-30=low, 30-60=medium, 60-85=high, 85-100=critical
+- If clean/safe, return is_phishing=false with risk_score=0
+- Always respond with valid JSON only"""
+
 
 class OpenAIAnalyzer:
     """Uses OpenAI API to provide detailed phishing explanations."""
@@ -57,6 +94,57 @@ class OpenAIAnalyzer:
     def is_available(self) -> bool:
         """Check whether the OpenAI analyzer can be used."""
         return self.client is not None and self.enabled
+
+    async def detect_threats(self, text: str) -> Optional[dict]:
+        """Detect and score all phishing threats in text using OpenAI.
+
+        Returns dict with 'risk_score', 'is_phishing', 'threats', 'tactics' or None on failure.
+        """
+        if not self.is_available():
+            logger.debug("OpenAI not available, skipping threat detection")
+            return None
+
+        if not text or len(text.strip()) < 5:
+            return {
+                "risk_score": 0,
+                "is_phishing": False,
+                "threats": [],
+                "overall_assessment": "Text too short for analysis",
+                "tactics": [],
+            }
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": THREAT_DETECTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Analyze this text for phishing/scam indicators:\n\n{text}"},
+                ],
+                max_tokens=1200,
+                temperature=0.1,
+            )
+
+            raw = response.choices[0].message.content.strip()
+
+            # Strip markdown if present
+            if raw.startswith("```"):
+                lines = raw.split("\n")
+                raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
+
+            result = json.loads(raw)
+            logger.info(
+                "OpenAI threat detection complete — risk=%d, phishing=%s",
+                result.get("risk_score", 0),
+                result.get("is_phishing", False),
+            )
+            return self._validate_threat_result(result)
+
+        except json.JSONDecodeError as exc:
+            logger.error("Failed to parse OpenAI threat response as JSON: %s", exc)
+            return None
+        except Exception as exc:
+            logger.error("OpenAI threat detection failed: %s", exc)
+            return None
 
     def analyze_threat(
         self, phrase: str, category: str
@@ -127,6 +215,26 @@ Provide:
             "job": "This offers a job opportunity unsolicited - Real employers don't ask for money upfront.",
         }
         return f"Threat context: {contexts.get(category, 'General phishing pattern detected.')}"
+
+    def _validate_threat_result(self, result: dict) -> Optional[dict]:
+        """Ensure the threat detection response has required fields."""
+        required = {"risk_score", "is_phishing", "threats"}
+        if not required.issubset(result.keys()):
+            logger.warning("OpenAI threat response missing fields: %s", required - result.keys())
+            return None
+
+        risk_score = result.get("risk_score", 0)
+        if not isinstance(risk_score, (int, float)) or risk_score < 0 or risk_score > 100:
+            logger.warning("Invalid risk_score from OpenAI: %s", risk_score)
+            result["risk_score"] = max(0, min(100, int(risk_score) if isinstance(risk_score, (int, float)) else 0))
+
+        if not isinstance(result.get("is_phishing"), bool):
+            result["is_phishing"] = risk_score >= 30
+
+        if not isinstance(result.get("threats"), list):
+            result["threats"] = []
+
+        return result
 
     def _validate(self, result: dict) -> Optional[dict]:
         """Ensure the OpenAI response has the expected fields."""

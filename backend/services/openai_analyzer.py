@@ -8,19 +8,25 @@ from utils.logger import setup_logger
 
 logger = setup_logger("openai_analyzer")
 
-SYSTEM_PROMPT = """You are a phishing detection expert. When given a suspicious phrase from a message, provide a specific, non-generic explanation of why it is dangerous.
+SYSTEM_PROMPT = """You are a phishing detection expert specializing in multilingual financial fraud and social engineering attacks. When given a suspicious phrase, explain SPECIFICALLY why it's dangerous by contrasting it with how REAL institutions actually operate.
 
-Use examples like:
-- "Real lotteries don't contact winners via unsolicited messages"
-- "Real banks never ask for OTP or CVV via messages"
-- "Legitimate government agencies don't threaten immediate arrest"
-- "Authentic platforms won't ask you to verify account with personal details"
+Real Institution Facts:
+BANKING: Real banks NEVER ask for OTP, CVV, PIN, or account passwords via SMS/messaging/email. They verify you through secure authenticated apps. Account blocks are handled through official channels only.
 
-Be specific to the actual threat pattern, not generic. Respond ONLY with valid JSON in this format:
+GOVERNMENT: Real government agencies send official notices through registered post or official portals, never demand immediate payment threats, never ask for personal documents via messages.
+
+PAYMENTS/UPI: Real payment apps show money received/pending through authenticated notifications only. They never ask you to "click links" or "verify payment" after it's already processed.
+
+LOTTERY/GRANTS: Real lotteries/government schemes you didn't enter don't contact you. Unsolicited "you won" messages are 100% scams.
+
+JOBS: Real companies don't ask for money upfront, don't verify through messages, don't demand credentials instantly. Legit job offers come with official communication.
+
+Be specific about which institution would NEVER do this. Respond ONLY with valid JSON:
 {
-  "reason": "specific explanation why this is dangerous",
+  "reason": "Why this specific phrase is dangerous - mention how real institutions work differently",
+  "what_real_institutions_do": "How legitimate versions of this organization actually handle this situation",
   "severity": "high|medium|low",
-  "recommendation": "what user should do"
+  "recommendation": "Specific action user should take"
 }"""
 
 
@@ -57,19 +63,24 @@ class OpenAIAnalyzer:
     ) -> Optional[dict[str, str]]:
         """Get detailed explanation for a threat phrase.
 
-        Returns dict with 'reason', 'severity', and 'recommendation' or None on failure.
+        Returns dict with 'reason', 'severity', 'what_real_institutions_do', and 'recommendation' or None on failure.
         """
         if not self.is_available():
             logger.debug("OpenAI not available, skipping analysis")
             return None
 
         try:
-            user_prompt = f"""Analyze this suspicious message phrase and explain why it's a phishing threat:
+            category_context = self._get_category_context(category)
+            user_prompt = f"""Analyze this suspicious message phrase and explain why it's dangerous by contrasting with how REAL institutions work:
 
 Phrase: "{phrase}"
-Category: {category}
+Detected Category: {category}
+{category_context}
 
-Provide specific reasons why this is dangerous, not generic warnings."""
+Provide:
+1. Why this specific phrase is dangerous (not generic)
+2. How legitimate institutions handle this differently
+3. Specific action the user should take"""
 
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -77,8 +88,8 @@ Provide specific reasons why this is dangerous, not generic warnings."""
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=200,
-                temperature=0.3,
+                max_tokens=280,
+                temperature=0.2,
             )
 
             raw = response.choices[0].message.content.strip()
@@ -98,6 +109,24 @@ Provide specific reasons why this is dangerous, not generic warnings."""
         except Exception as exc:
             logger.error("OpenAI analysis failed: %s", exc)
             return None
+
+    def _get_category_context(self, category: str) -> str:
+        """Provide contextual hints based on detected threat category."""
+        contexts = {
+            "otp": "This mentions OTP/PIN/password - Real banks NEVER ask for these via messages.",
+            "kyc": "This mentions KYC/verification - Real institutions verify through secure portals, not messages.",
+            "payment": "This mentions payment/money transfer - Real apps confirm through authenticated interfaces only.",
+            "urgent": "This creates false urgency/threat - Real institutions don't rush you into decisions via messages.",
+            "link": "This asks to click a link - Real institutions send verified links only through official apps/portals.",
+            "credential": "This asks for login credentials - Real services NEVER ask for passwords or personal pins.",
+            "genai_detected": "AI detected social engineering pattern - Be suspicious of unexpected requests.",
+            "ml_detected": "ML model flagged suspicious patterns - Exercise caution.",
+            "ml_line_detected": "This line shows phishing indicators - Verify before taking action.",
+            "fear": "This uses fear tactics - Real institutions don't threaten via messages.",
+            "lottery": "This claims you won something unsolicited - This is almost always a scam.",
+            "job": "This offers a job opportunity unsolicited - Real employers don't ask for money upfront.",
+        }
+        return f"Threat context: {contexts.get(category, 'General phishing pattern detected.')}"
 
     def _validate(self, result: dict) -> Optional[dict]:
         """Ensure the OpenAI response has the expected fields."""

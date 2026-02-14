@@ -15,7 +15,11 @@ from utils.logger import setup_logger
 logger = setup_logger("ml_classifier")
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-DATASET_PATH = BASE_DIR / "data" / "phishing_multilingual_7500.csv"
+DATASET_PATHS = [
+    BASE_DIR / "data" / "phishing_multilingual_7500.csv",
+    BASE_DIR / "data" / "phishing_multilingual_from_md.csv",
+    BASE_DIR / "data" / "phishing_multilingual_vernacular_22lang.csv",
+]
 MODEL_PATH = BASE_DIR / "models" / "phishing_tfidf_logreg_model.json"
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
@@ -33,8 +37,8 @@ class MLPhishingClassifier:
             self.model = json.loads(MODEL_PATH.read_text(encoding="utf-8"))
             logger.info("Loaded ML model from %s", MODEL_PATH)
             return
-        logger.warning("ML model missing, training from dataset...")
-        self.train(DATASET_PATH, MODEL_PATH)
+        logger.warning("ML model missing, training from all datasets...")
+        self.train(DATASET_PATHS, MODEL_PATH)
 
     def _tokens(self, text: str) -> list[str]:
         return TOKEN_RE.findall(text.lower())
@@ -71,20 +75,40 @@ class MLPhishingClassifier:
                 vec[k] /= norm
         return vec
 
-    def train(self, dataset_path: Path, model_path: Path) -> None:
+    def train(self, dataset_paths, model_path: Path) -> None:
         texts: list[str] = []
         labels: list[int] = []
         docs_tokens: list[list[str]] = []
 
-        with dataset_path.open("r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                text = row["text"]
-                label = int(row["label"])
-                toks = self._tokens(text)
-                texts.append(text)
-                labels.append(label)
-                docs_tokens.append(toks)
+        # Support both single path and multiple paths
+        if isinstance(dataset_paths, Path):
+            dataset_paths = [dataset_paths]
+
+        for dataset_path in dataset_paths:
+            if not dataset_path.exists():
+                logger.warning("Dataset not found: %s, skipping", dataset_path)
+                continue
+
+            logger.info("Loading dataset: %s", dataset_path)
+            with dataset_path.open("r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    text = row.get("text", "").strip()
+                    label_str = row.get("label", "0")
+                    if not text:
+                        continue
+                    try:
+                        label = int(label_str)
+                    except (ValueError, TypeError):
+                        continue
+                    toks = self._tokens(text)
+                    texts.append(text)
+                    labels.append(label)
+                    docs_tokens.append(toks)
+
+        if not texts:
+            logger.error("No training data found in any dataset")
+            return
 
         vocab, idf = self._build_vocab_and_idf(docs_tokens)
         vectors = [self._vectorize(toks, vocab, idf) for toks in docs_tokens]
@@ -148,10 +172,12 @@ class MLPhishingClassifier:
         }
 
     def get_info(self) -> dict:
+        dataset_status = {
+            str(dp): dp.exists() for dp in DATASET_PATHS
+        }
         return {
             "model": self.model_name,
             "model_path": str(MODEL_PATH),
-            "dataset_path": str(DATASET_PATH),
-            "dataset_exists": DATASET_PATH.exists(),
+            "datasets": dataset_status,
             "model_exists": MODEL_PATH.exists(),
         }

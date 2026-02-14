@@ -11,6 +11,34 @@
   background: rgba(255, 87, 51, 0.5) !important;
 }
 
+/* Severity color variants */
+.surakshaai-red {
+  background: rgba(244, 67, 54, 0.3) !important;
+  border-bottom: 3px solid #f44336 !important;
+}
+
+.surakshaai-red:hover {
+  background: rgba(244, 67, 54, 0.5) !important;
+}
+
+.surakshaai-yellow {
+  background: rgba(255, 152, 0, 0.25) !important;
+  border-bottom: 3px solid #ff9800 !important;
+}
+
+.surakshaai-yellow:hover {
+  background: rgba(255, 152, 0, 0.4) !important;
+}
+
+.surakshaai-orange {
+  background: rgba(255, 111, 0, 0.25) !important;
+  border-bottom: 2px solid #ff6f00 !important;
+}
+
+.surakshaai-orange:hover {
+  background: rgba(255, 111, 0, 0.4) !important;
+}
+
 .surakshaai-tooltip {
   position: fixed !important;
   background: #1a1a1a !important;

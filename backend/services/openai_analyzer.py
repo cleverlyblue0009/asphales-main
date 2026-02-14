@@ -1,5 +1,6 @@
 """Google Gemini integration for threat detection and detailed explanations."""
 
+import asyncio
 import json
 import os
 from typing import Optional
@@ -74,6 +75,7 @@ class GeminiAnalyzer:
         self.api_key: Optional[str] = os.getenv("GEMINI_API_KEY")
         self.enabled: bool = os.getenv("ENABLE_GEMINI", "true").lower() == "true"
         self.model: str = "gemini-1.5-flash"
+        self.timeout: int = int(os.getenv("GEMINI_TIMEOUT", "30"))
         self.client: Optional[object] = None
 
         if self.api_key and self.enabled:
@@ -82,7 +84,7 @@ class GeminiAnalyzer:
 
                 genai.configure(api_key=self.api_key)
                 self.client = genai
-                logger.info("Gemini analyzer initialized with model %s", self.model)
+                logger.info("Gemini analyzer initialized with model %s, timeout %ds", self.model, self.timeout)
             except ImportError:
                 logger.warning("google-generativeai package not installed")
         else:
@@ -115,23 +117,31 @@ class GeminiAnalyzer:
 
         try:
             model = self.client.GenerativeModel(self.model)
-
             user_prompt = f"{THREAT_DETECTION_SYSTEM_PROMPT}\n\nAnalyze this text for phishing/scam indicators:\n\n{text}"
 
-            response = model.generate_content(
-                user_prompt,
-                generation_config=self.client.types.GenerationConfig(
-                    max_output_tokens=1200,
-                    temperature=0.1,
+            # Run blocking API call in executor to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: model.generate_content(
+                        user_prompt,
+                        generation_config=self.client.types.GenerationConfig(
+                            max_output_tokens=1200,
+                            temperature=0.1,
+                        ),
+                    ),
                 ),
+                timeout=self.timeout,
             )
 
             raw = response.text.strip()
 
-            # Strip markdown if present
-            if raw.startswith("```"):
-                lines = raw.split("\n")
-                raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
+            # Extract JSON from response (handles markdown and formatting)
+            raw = self._extract_json(raw)
+            if not raw:
+                logger.error("No valid JSON found in Gemini threat response")
+                return None
 
             result = json.loads(raw)
             logger.info(
@@ -141,6 +151,9 @@ class GeminiAnalyzer:
             )
             return self._validate_threat_result(result)
 
+        except asyncio.TimeoutError:
+            logger.error("Gemini threat detection timeout after %ds", self.timeout)
+            return None
         except json.JSONDecodeError as exc:
             logger.error("Failed to parse Gemini threat response as JSON: %s", exc)
             return None
@@ -148,7 +161,7 @@ class GeminiAnalyzer:
             logger.error("Gemini threat detection failed: %s", exc)
             return None
 
-    def analyze_threat(
+    async def analyze_threat(
         self, phrase: str, category: str
     ) -> Optional[dict[str, str]]:
         """Get detailed explanation for a threat phrase.
@@ -175,31 +188,75 @@ Provide:
 3. Specific action the user should take"""
 
             model = self.client.GenerativeModel(self.model)
-            response = model.generate_content(
-                user_prompt,
-                generation_config=self.client.types.GenerationConfig(
-                    max_output_tokens=280,
-                    temperature=0.2,
+
+            # Run blocking API call in executor
+            loop = asyncio.get_event_loop()
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: model.generate_content(
+                        user_prompt,
+                        generation_config=self.client.types.GenerationConfig(
+                            max_output_tokens=280,
+                            temperature=0.2,
+                        ),
+                    ),
                 ),
+                timeout=self.timeout,
             )
 
             raw = response.text.strip()
 
-            # Strip markdown if present
-            if raw.startswith("```"):
-                lines = raw.split("\n")
-                raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
+            # Extract JSON from response (handles markdown and formatting)
+            raw = self._extract_json(raw)
+            if not raw:
+                logger.error("No valid JSON found in Gemini analysis response")
+                return None
 
             result = json.loads(raw)
             logger.info("Gemini analysis complete — severity=%s", result.get("severity"))
             return self._validate(result)
 
+        except asyncio.TimeoutError:
+            logger.error("Gemini analysis timeout after %ds", self.timeout)
+            return None
         except json.JSONDecodeError as exc:
             logger.error("Failed to parse Gemini response as JSON: %s", exc)
             return None
         except Exception as exc:
             logger.error("Gemini analysis failed: %s", exc)
             return None
+
+    def _extract_json(self, text: str) -> Optional[str]:
+        """Extract JSON from text, handling markdown code blocks and formatting."""
+        if not text:
+            return None
+
+        # Try to strip markdown code blocks first
+        if "```json" in text:
+            # Extract content between ```json and ```
+            start = text.find("```json") + 7
+            end = text.find("```", start)
+            if end > start:
+                text = text[start:end].strip()
+        elif "```" in text:
+            # Extract content between ``` and ```
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end > start:
+                text = text[start:end].strip()
+
+        # Remove any leading/trailing whitespace
+        text = text.strip()
+
+        # Try to find JSON object by looking for opening and closing braces
+        start_idx = text.find("{")
+        end_idx = text.rfind("}")
+
+        if start_idx != -1 and end_idx > start_idx:
+            return text[start_idx:end_idx + 1]
+
+        return text if text else None
 
     def _get_category_context(self, category: str) -> str:
         """Provide contextual hints based on detected threat category."""

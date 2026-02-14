@@ -7,7 +7,7 @@ from models.risk_scorer import RiskResult, RiskScorer, ThreatDetail
 from services.cache_manager import CacheManager
 from services.genai_analyzer import GenAIAnalyzer
 from services.ml_classifier import MLPhishingClassifier
-from backend.services.fewshot_analyzer import GeminiAnalyzer
+from services.vernacular_analyzer import VernacularPhishingAnalyzer as GeminiAnalyzer
 from utils.logger import setup_logger
 from utils.text_processor import text_hash, validate_length, detect_language, get_detected_scripts
 

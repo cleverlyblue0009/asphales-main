@@ -86,16 +86,24 @@ function renderResult(result) {
     return;
   }
 
-  const topThreats = threats
+  // Show ALL threats, not just top 6
+  const allThreats = threats
     .slice()
-    .sort((a, b) => (b.risk || 0) - (a.risk || 0))
-    .slice(0, 6);
+    .sort((a, b) => (b.risk || 0) - (a.risk || 0));
 
-  threatListDiv.innerHTML = topThreats
+  const threatCount = allThreats.length;
+  const threatCountMsg = threatCount > 10 ? `<div class="threat-count">Showing all ${threatCount} threats detected</div>` : '';
+
+  threatListDiv.innerHTML = threatCountMsg + allThreats
     .map((threat) => {
       const color = threat.severity_color || 'orange';
       const severityDisplay = color === 'red' ? 'HIGH' : color === 'yellow' ? 'MEDIUM' : 'LOW';
       const severityClass = `severity-${color}`;
+
+      // Truncate long phrases for display
+      const displayPhrase = (threat.phrase || 'Suspicious message segment').length > 150
+        ? (threat.phrase || 'Suspicious message segment').substring(0, 150) + '...'
+        : (threat.phrase || 'Suspicious message segment');
 
       return `
         <div class="threat-item ${color}">
@@ -103,7 +111,7 @@ function renderResult(result) {
             ${t('riskLabel')} ${threat.risk || 0}% · ${threat.category || 'suspicious'}
             <span class="severity-badge ${severityClass}">${severityDisplay}</span>
           </div>
-          <div class="threat-phrase">${threat.phrase || 'Suspicious message segment'}</div>
+          <div class="threat-phrase">${displayPhrase}</div>
           <div class="threat-explain">${threat.explanation || 'Potential phishing pattern detected.'}</div>
         </div>`;
     })

@@ -118,18 +118,32 @@ function useFallbackDetection(text) {
 // ============ HIGHLIGHT DANGEROUS TEXT ============
 function highlightText(textNode, phrase, risk, explanation, severityColor) {
   const text = textNode.textContent;
-  const lowerText = text.toLowerCase();
-  const lowerPhrase = phrase.toLowerCase();
-  const index = lowerText.indexOf(lowerPhrase);
 
-  if (index === -1) return;
+  // Normalize both texts using NFC for proper Unicode comparison
+  const normalizedText = text.normalize('NFC');
+  const normalizedPhrase = phrase.normalize('NFC');
 
-  console.log(`🎯 Highlighting: "${phrase}" with risk ${risk}% and color ${severityColor}`);
+  // Try exact match first (case-sensitive, needed for vernacular)
+  let index = normalizedText.indexOf(normalizedPhrase);
+
+  // If no exact match, try case-insensitive (for English/Hinglish)
+  if (index === -1) {
+    const lowerText = normalizedText.toLowerCase();
+    const lowerPhrase = normalizedPhrase.toLowerCase();
+    index = lowerText.indexOf(lowerPhrase);
+  }
+
+  if (index === -1) {
+    console.debug(`Could not find phrase in node: "${phrase}"`);
+    return;
+  }
+
+  console.log(`🎯 Highlighting: "${phrase}" (pos: ${index}, len: ${phrase.length}) with risk ${risk}%`);
 
   try {
     const range = document.createRange();
     range.setStart(textNode, index);
-    range.setEnd(textNode, index + phrase.length);
+    range.setEnd(textNode, index + normalizedPhrase.length);
 
     const span = document.createElement('span');
     span.className = `surakshaai-highlight surakshaai-${severityColor}`;
@@ -238,8 +252,15 @@ async function scanPage() {
       console.log(`⚠️ Found ${result.threats.length} threats`);
 
       result.threats.forEach(threat => {
-        limitedBlocks.forEach(block => {
-          if (block.text.toLowerCase().includes(threat.phrase.toLowerCase())) {
+        let highlighted = false;
+
+        // Try to match in individual blocks first
+        for (const block of limitedBlocks) {
+          const blockNorm = block.text.normalize('NFC');
+          const phraseNorm = threat.phrase.normalize('NFC');
+
+          // Try exact match
+          if (blockNorm.includes(phraseNorm)) {
             highlightText(
               block.node,
               threat.phrase,
@@ -247,8 +268,27 @@ async function scanPage() {
               threat.explanation || "Suspicious content detected.",
               threat.severity_color || "orange"
             );
+            highlighted = true;
+            break;
           }
-        });
+
+          // Try case-insensitive match for English
+          if (blockNorm.toLowerCase().includes(phraseNorm.toLowerCase())) {
+            highlightText(
+              block.node,
+              threat.phrase,
+              threat.risk,
+              threat.explanation || "Suspicious content detected.",
+              threat.severity_color || "orange"
+            );
+            highlighted = true;
+            break;
+          }
+        }
+
+        if (!highlighted) {
+          console.warn(`Could not find and highlight threat in page: "${threat.phrase.substring(0, 50)}..."`);
+        }
       });
     } else {
       console.log('✅ No threats detected');
